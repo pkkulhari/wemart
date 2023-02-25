@@ -1,0 +1,178 @@
+---
+version: '3'
+services:
+  mysql_order:
+    container_name: mysql_order
+    image: mysql:8
+    environment:
+      MYSQL_DATABASE: order_service
+      MYSQL_USER: order_service
+      MYSQL_PASSWORD: pass
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_TCP_PORT: 3301
+    volumes:
+       - ./mysql_order-data:/var/lib/mysql
+    expose:
+      - 3301
+    ports:
+      - "3301:3301"
+    restart: always
+
+  mysql_inventory:
+    container_name: mysql_inventory
+    image: mysql:8
+    environment:
+      MYSQL_DATABASE: inventory_service
+      MYSQL_USER: inventory_service
+      MYSQL_PASSWORD: pass
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_TCP_PORT: 3302
+    volumes:
+      - ./mysql_inventory-data:/var/lib/mysql
+    expose:
+      - 3302
+    ports:
+      - "3302:3302"
+    restart: always
+
+  mysql_keycloak:
+    container_name: mysql_keycloak
+    image: mysql:8
+    environment:
+      MYSQL_DATABASE: keycloak
+      MYSQL_USER: keycloak
+      MYSQL_PASSWORD: pass
+      MYSQL_ROOT_PASSWORD: root
+    volumes:
+      - ./mysql_keycloak-data:/var/lib/mysql
+    restart: always
+
+  mongo:
+    container_name: mongo
+    image: mongo:4.4.14-rc0-focal
+    restart: always
+    ports:
+      - "27017:27017"
+    expose:
+      - "27017"
+    volumes:
+      - ./mongo-data:/data/db
+
+  keycloak:
+    container_name: keycloak
+    image: quay.io/keycloak/keycloak:20.0.3
+    command: [ "start-dev", "--import-realm", "--http-port=8181" ]
+    environment:
+      DB_VENDOR: MYSQL
+      DB_ADDR: mysql
+      DB_DATABASE: keycloak
+      DB_USER: keycloak
+      DB_PASSWORD: pass
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    ports:
+      - "8181:8181"
+    volumes:
+      - ./realms/:/opt/keycloak/data/import/
+    depends_on:
+      - mysql_keycloak
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.3.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  broker:
+    image: confluentinc/cp-kafka:7.3.0
+    container_name: broker
+    ports:
+      - "9092:9092"
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://broker:29092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+
+  zipkin:
+    image: openzipkin/zipkin
+    container_name: zipkin
+    ports:
+      - "9411:9411"
+
+  # Services
+  discovery-server:
+    image: pkkulhari/webmart-discovery-server:latest
+    container_name: discovery-server
+    ports:
+      - "8761:8761"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+    depends_on:
+      - zipkin
+
+  api-gateway:
+    image: pkkulhari/webmart-api-gateway:latest
+    container_name: api-gateway
+    ports:
+      - "8080:8080"
+    expose:
+      - "8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_SECURITY=TRACE
+    depends_on:
+      - discovery-server
+      - zipkin
+      - keycloak
+
+  product-service:
+    container_name: product-service
+    image: pkkulhari/webmart-product-service:latest
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+    depends_on:
+      - mongo
+      - discovery-server
+      - api-gateway
+
+  order-service:
+    container_name: order-service
+    image: pkkulhari/webmart-order-service:latest
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql_order:3301/order_service
+    depends_on:
+      - mysql_order
+      - broker
+      - zipkin
+      - discovery-server
+      - api-gateway
+
+  inventory-service:
+    container_name: inventory-service
+    image: pkkulhari/webmart-inventory-service:latest
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql_inventory:3302/inventory_service
+    depends_on:
+      - mysql_inventory
+      - discovery-server
+      - api-gateway
+
+  notification-service:
+    container_name: notification-service
+    image: pkkulhari/webmart-notification-service:latest
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+    depends_on:
+      - zipkin
+      - broker
+      - discovery-server
+      - api-gateway
